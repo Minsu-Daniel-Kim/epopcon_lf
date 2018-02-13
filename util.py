@@ -57,6 +57,7 @@ def get_label_from_dbscan(df, eps=0.2, min_samples=3, outlier=True):
     df['INDEX'] = np.arange(3, len(df.STOCK_AMOUNT) + 3)
     Z = df[['STOCK_AMOUNT', 'INDEX']].values
     Z = np.vstack((Z, [[0, 2], [500, 1]]))
+    Z = Z.astype(float)
 
     scaler = preprocessing.MinMaxScaler(feature_range=(0, 100))
     Z[:, 0] = scaler.fit_transform(Z[:, 0].reshape(-1, 1))[:, 0]
@@ -194,6 +195,20 @@ def get_filtered_fg_df(feature_engineered_df):
     return purified_df
 
 
+def get_filtered_fg_df2(feature_engineered_df):
+    item_ids_static = feature_engineered_df.stock_id[(feature_engineered_df.std_in_cluster == 0.0)].values
+    data_df_cleaned = feature_engineered_df[feature_engineered_df.mean_in_cluster.notnull()]
+    purified_df = data_df_cleaned[(data_df_cleaned.ratio_drop < 0.2)
+                          & (data_df_cleaned.ratio_same_value < 0.3)
+                          & (data_df_cleaned.n_jumps < 2)
+                          & (data_df_cleaned.n_days > 20)
+                          & (data_df_cleaned.std_in_cluster > 0.2)
+                          & (data_df_cleaned.std_in_cluster < 4)
+                          & (data_df_cleaned.ratio_of_na < 0.5)
+                          & (data_df_cleaned.n_unique_stock_id < 10)]
+    return (item_ids_static, purified_df)
+
+
 
 def get_ivt_item(item_id):
     result = list(data_dict[item_id].groupby('STOCK_ID'))[0][1]
@@ -208,21 +223,37 @@ def map_clean_up_target_df(series):
     return clean_up_target_df(tmp_df)['sell_impute']
 
 
-def get_sell_amount_by_item_id(df):
+def save_img(cleaned_df):
+
+    for idx, group in cleaned_df.groupby('STOCK_ID'):
+        fig = plt.figure(figsize=(2, 1))
+        plt.axis('off')
+        plt.plot(group.index, group.STOCK_AMOUNT, '.')
+        plt.savefig('images/dataset/correct/%s' % idx)
+        plt.close(fig)
+
+def get_sell_amount_by_item_id(df, add_sell_amount=False):
+    collect_day = df.COLLECT_DAY.values[0]
+    reg_id = df.REG_ID.values[0]
     df_pivot = df.pivot_table(index='REG_DT', columns='STOCK_ID', values='STOCK_AMOUNT')
     sell_amount_by_stock = df_pivot.apply(map_clean_up_target_df)
-    sell_amount_total = sell_amount_by_stock.sum(axis=1)
-    
-    result = pd.DataFrame(sell_amount_total)
-    result.columns = ['SELL_AMOUNT']
+
+    if add_sell_amount:
+        sell_amount_total = sell_amount_by_stock.sum(axis=1)
+        result = pd.DataFrame(sell_amount_total)
+        result.columns = ['SELL_AMOUNT']
+        result['REG_ID'] = reg_id
+    else:
+        sell_amount_by_stock['REG_DT'] = sell_amount_by_stock.index
+        result = pd.melt(sell_amount_by_stock, id_vars=["REG_DT"], var_name="STOCK_ID", value_name="SELL_AMOUNT")
+
     item_id = df.ITEM_ID.values[0]
     result['ITEM_ID'] = item_id
-    result['REG_ID'] = 'SERVER'
+    result['REG_ID'] = reg_id
     result['UPT_DT'] = pd.to_datetime('now')
-    result['COLLECT_DAY'] = pd.to_datetime('now')
+    result['COLLECT_DAY'] = collect_day
     result['UPT_ID'] = 'FILTER ALGO'
-    
-    
+
     return result
 
 
@@ -404,8 +435,13 @@ def plot_sample_from_item_ivts(df):
         plt.xticks(rotation="60")
     plt.show()
 
-def get_engine():
-    engine = create_engine("mysql://wspider:wspider00!q@133.186.143.65:3306/wspider",
+def get_engine(production=False):
+
+    if production:
+        engine = create_engine("mysql://wspider:wspider00!q@133.186.143.65:3306/wspider",
+                           connect_args={'connect_timeout': 10000})
+    else:
+        engine = create_engine("mysql://eums:eums00!q@192.168.0.50:3306/wspider_temp",
                            connect_args={'connect_timeout': 10000})
 
     return engine
