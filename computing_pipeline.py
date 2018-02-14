@@ -1,19 +1,24 @@
 
 # coding: utf-8
 
-# In[2]:
+# In[79]:
 
 
 # %load_ext autoreload
-# # from ggplot import *
-# %autoreload 3
+
+# %autoreload 4
+from sqlalchemy import Table, Column, String, Integer, Float, Boolean, MetaData, insert, select, BIGINT, Date, DateTime, VARCHAR
 from util import *
 
 
-# In[378]:
+# In[80]:
 
 
-# item = glob.glob('data/pickle/ivt_item/ivt_item_1.pkl')
+engine2 = get_engine(production=False)
+
+
+# In[188]:
+
 
 def process_batch(file):
     
@@ -29,7 +34,7 @@ def process_batch(file):
     result_df = pd.DataFrame(results)
     
     # save feature engineered df
-    result_df.to_pickle('data/pickle/ivt_item_feature_engineered/%s' % str(file.split('/')[-1]))
+#     result_df.to_pickle('data/pickle/ivt_item_feature_engineered/%s' % str(file.split('/')[-1]))
     
     # filter dataframe
     filtered_df = get_filtered_fg_df(result_df)
@@ -37,46 +42,47 @@ def process_batch(file):
     
     cleaned_item_ids = filtered_df.item_id.values
     cleaned_df = batch[batch['ITEM_ID'].isin(cleaned_item_ids)]
+    
+    
+    
     df_lst =[]
     
-    # save images
+#     save images
     save_img(cleaned_df)
 
 
-    for idx, group in list(cleaned_df.groupby('ITEM_ID')):
+
+    for idx, group in cleaned_df.groupby('ITEM_ID'):
         try:
             df_lst.append(get_sell_amount_by_item_id(group))
+            
         except:
             continue
+
             
     if len(df_lst) > 0:
             
         result = pd.concat(df_lst)
-        result.to_sql(con=engine, name='MWS_COLT_ITEM_SELL_AMT_DEV', if_exists='append', flavor='mysql')
+        result[['COLLECT_DAY']] = result.index
+        
+        del result['STOCK_AMOUNT_imputed']
+        del result['STOCK_AMOUNT']
+        
+        result.to_sql(con=engine2, name='MWS_COLT_ITEM_SELL_AMT', if_exists='append', flavor='mysql')
         logging.warning('done with %s' % str(file))
+    
 
 
-# In[379]:
-
-
-def map_clean_up_target_df(stock_id, group_df):
-
-    tmp_df = clean_up_target_df(group_df)[['sell_impute', 'STOCK_AMOUNT', 'STOCK_AMOUNT_imputed']]
-    tmp_df['STOCK_ID'] = stock_id
-    tmp_df.columns = ['SELL_AMOUNT', 'STOCK_AMOUNT', 'STOCK_AMOUNT_imputed', 'STOCK_ID']
-
-    return tmp_df
-
-
-# In[380]:
+# In[189]:
 
 
 def get_sell_amount_by_item_id(df, add_sell_amount=False):
+#     print('hierer')
     collect_day = df.COLLECT_DAY.values[0]
     reg_id = df.REG_ID.values[0]
     
     tmp_lst = []
-    for stock_id, group_df in list(group.groupby('STOCK_ID')):
+    for stock_id, group_df in list(df.groupby('STOCK_ID')):
         tmp_lst.append(map_clean_up_target_df(stock_id, group_df))    
     result = pd.concat(tmp_lst)
     
@@ -103,12 +109,25 @@ def get_sell_amount_by_item_id(df, add_sell_amount=False):
     return result
 
 
-# In[383]:
+# In[190]:
 
 
-if __name__ == '__main__':
-    files = glob.glob('data/pickle/ivt_item/*.pkl')[:2]
-    engine = get_engine()
-    add_engine_pidguard(engine)    
-    Parallel(n_jobs=-1)(map(delayed(process_batch), files))
+def map_clean_up_target_df(stock_id, group_df):
+
+    tmp_df = clean_up_target_df(group_df)[['sell_impute', 'STOCK_AMOUNT', 'STOCK_AMOUNT_imputed']]
+    tmp_df['STOCK_ID'] = stock_id
+    tmp_df.columns = ['SELL_AMOUNT', 'STOCK_AMOUNT', 'STOCK_AMOUNT_imputed', 'STOCK_ID']
+
+    return tmp_df
+
+
+# In[193]:
+
+
+
+logging.warning("it's begin")
+files = glob.glob('data/pickle/ivt_item/*.pkl')[:5]
+engine = get_engine(production=True)
+add_engine_pidguard(engine)    
+tmp_lst = Parallel(n_jobs=-1)(map(delayed(process_batch), files))
 

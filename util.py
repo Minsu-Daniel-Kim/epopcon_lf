@@ -150,10 +150,14 @@ def get_feature_engineered_bundle(df):
     
     tmp3['label'] = label
     arr_in_cluster = get_arr_in_cluster(tmp3)
-    
-    mean_in_cluster = np.nanmean(arr_in_cluster)
-    std_in_cluster = np.nanstd(arr_in_cluster)
-    
+
+    if len(arr_in_cluster) > 0:
+
+        mean_in_cluster = np.nanmean(arr_in_cluster)
+        std_in_cluster = np.nanstd(arr_in_cluster)
+    else:
+        mean_in_cluster = 0
+        std_in_cluster = 0
 
     
     bundle = {
@@ -215,12 +219,13 @@ def get_ivt_item(item_id):
     return result
 
 
-def map_clean_up_target_df(series):
+def map_clean_up_target_df(stock_id, group_df):
 
-    tmp_df = pd.DataFrame(series)
-    tmp_df.columns = ['STOCK_AMOUNT']
-    tmp_df['REG_DT'] = tmp_df.index
-    return clean_up_target_df(tmp_df)['sell_impute']
+    tmp_df = clean_up_target_df(group_df)[['sell_impute', 'STOCK_AMOUNT', 'STOCK_AMOUNT_imputed']]
+    tmp_df['STOCK_ID'] = stock_id
+    tmp_df.columns = ['SELL_AMOUNT', 'STOCK_AMOUNT', 'STOCK_AMOUNT_imputed', 'STOCK_ID']
+
+    return tmp_df
 
 
 def save_img(cleaned_df):
@@ -232,20 +237,28 @@ def save_img(cleaned_df):
         plt.savefig('images/dataset/correct/%s' % idx)
         plt.close(fig)
 
+
 def get_sell_amount_by_item_id(df, add_sell_amount=False):
+    #     print('hierer')
     collect_day = df.COLLECT_DAY.values[0]
     reg_id = df.REG_ID.values[0]
-    df_pivot = df.pivot_table(index='REG_DT', columns='STOCK_ID', values='STOCK_AMOUNT')
-    sell_amount_by_stock = df_pivot.apply(map_clean_up_target_df)
 
-    if add_sell_amount:
-        sell_amount_total = sell_amount_by_stock.sum(axis=1)
-        result = pd.DataFrame(sell_amount_total)
-        result.columns = ['SELL_AMOUNT']
-        result['REG_ID'] = reg_id
-    else:
-        sell_amount_by_stock['REG_DT'] = sell_amount_by_stock.index
-        result = pd.melt(sell_amount_by_stock, id_vars=["REG_DT"], var_name="STOCK_ID", value_name="SELL_AMOUNT")
+    tmp_lst = []
+    for stock_id, group_df in list(df.groupby('STOCK_ID')):
+        tmp_lst.append(map_clean_up_target_df(stock_id, group_df))
+    result = pd.concat(tmp_lst)
+
+    #     df_pivot = df.pivot_table(index='REG_DT', columns='STOCK_ID', values='STOCK_AMOUNT')
+    #     sell_amount_by_stock = df_pivot.apply(map_clean_up_target_df)
+
+    #     if add_sell_amount:
+    #         sell_amount_total = sell_amount_by_stock.sum(axis=1)
+    #         result = pd.DataFrame(sell_amount_total)
+    #         result.columns = ['SELL_AMOUNT']
+    #         result['REG_ID'] = reg_id
+    #     else:
+    #         sell_amount_by_stock['REG_DT'] = sell_amount_by_stock.index
+    #         result = pd.melt(sell_amount_by_stock, id_vars=["REG_DT"], var_name="STOCK_ID", value_name="SELL_AMOUNT")
 
     item_id = df.ITEM_ID.values[0]
     result['ITEM_ID'] = item_id
