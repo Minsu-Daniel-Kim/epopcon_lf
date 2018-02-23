@@ -27,6 +27,14 @@ import glob
 from sqlalchemy import event
 from sqlalchemy import exc
 
+from time import gmtime, strftime
+from pytz import timezone
+from datetime import datetime
+from sqlalchemy import ForeignKey, Table, Column, String, Integer, Float, Boolean, MetaData
+
+import boto3
+from botocore.exceptions import ClientError
+
 
 import itertools
 from joblib import Parallel, delayed
@@ -45,6 +53,17 @@ pd.set_option('display.max_rows', 10)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
+
+### s3 uploader
+class S3_uploader:
+    
+    def __init__(self, bucket_name):
+        self.s3 = boto3.client('s3')
+        self.bucket_name = bucket_name
+    
+    def upload(self, file, directory=''):
+        self.s3.upload_file(file, self.bucket_name, os.path.join(directory, file.split('/')[-1]))
+    
 
 ######## feature engineering #################
 
@@ -191,11 +210,11 @@ def get_filtered_fg_df(feature_engineered_df):
     purified_df = data_df_cleaned[(data_df_cleaned.ratio_drop < 0.2)
                           & (data_df_cleaned.ratio_same_value < 0.3)
                           & (data_df_cleaned.n_jumps < 2)
-                          & (data_df_cleaned.n_days > 20)
+                          & (data_df_cleaned.n_days > 5)
                           & (data_df_cleaned.std_in_cluster > 0.2)
                           & (data_df_cleaned.std_in_cluster < 4)
                           & (data_df_cleaned.ratio_of_na < 0.5)
-                          & (data_df_cleaned.n_unique_stock_id < 10)]
+                          & (data_df_cleaned.n_unique_stock_id < 30)]
     return purified_df
 
 
@@ -458,6 +477,34 @@ def get_engine(production=False):
                            connect_args={'connect_timeout': 10000})
 
     return engine
+
+
+class Epopcon_db:
+    
+    def __init__(self, local_access=True):
+        
+        if local_access:
+        
+            self.wspider_temp = create_engine("mysql://eums:eums00!q@115.90.182.250:11000/wspider_temp",
+                           connect_args={'connect_timeout': 10000})
+            self.wspider = create_engine("mysql://wspider:wspider00!q@192.168.0.36:3306/wspider", pool_size=20,
+                       connect_args={'connect_timeout': 10000})
+        else:
+            
+            self.wspider_temp = create_engine("mysql://eums:eums00!q@192.168.0.50:3306/wspider_temp",
+                           connect_args={'connect_timeout': 10000})
+            
+            self.wspider = create_engine("mysql://wspider:wspider00!q@133.186.143.65:3306/wspider",
+                           connect_args={'connect_timeout': 10000})
+                
+        add_engine_pidguard(self.wspider_temp)
+        add_engine_pidguard(self.wspider)
+    def get_engine(self, production=False):
+        
+        if production:
+            return self.wspider
+        else:
+            return self.wspider_temp
 
 def get_image_from_item_id(item_id):
     engine = get_engine()

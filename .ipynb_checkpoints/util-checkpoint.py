@@ -27,6 +27,14 @@ import glob
 from sqlalchemy import event
 from sqlalchemy import exc
 
+from time import gmtime, strftime
+from pytz import timezone
+from datetime import datetime
+from sqlalchemy import ForeignKey, Table, Column, String, Integer, Float, Boolean, MetaData
+
+import boto3
+from botocore.exceptions import ClientError
+
 
 import itertools
 from joblib import Parallel, delayed
@@ -46,6 +54,17 @@ pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
 
+### s3 uploader
+class S3_uploader:
+    
+    def __init__(self, bucket_name):
+        self.s3 = boto3.client('s3')
+        self.bucket_name = bucket_name
+    
+    def upload(self, file, directory=''):
+        self.s3.upload_file(file, self.bucket_name, os.path.join(directory, file.split('/')[-1]))
+    
+
 ######## feature engineering #################
 
 def get_label_from_dbscan(df, eps=0.2, min_samples=3, outlier=True):
@@ -57,6 +76,7 @@ def get_label_from_dbscan(df, eps=0.2, min_samples=3, outlier=True):
     df['INDEX'] = np.arange(3, len(df.STOCK_AMOUNT) + 3)
     Z = df[['STOCK_AMOUNT', 'INDEX']].values
     Z = np.vstack((Z, [[0, 2], [500, 1]]))
+    Z = Z.astype(float)
 
     scaler = preprocessing.MinMaxScaler(feature_range=(0, 100))
     Z[:, 0] = scaler.fit_transform(Z[:, 0].reshape(-1, 1))[:, 0]
@@ -149,10 +169,14 @@ def get_feature_engineered_bundle(df):
     
     tmp3['label'] = label
     arr_in_cluster = get_arr_in_cluster(tmp3)
-    
-    mean_in_cluster = np.nanmean(arr_in_cluster)
-    std_in_cluster = np.nanstd(arr_in_cluster)
-    
+
+    if len(arr_in_cluster) > 0:
+
+        mean_in_cluster = np.nanmean(arr_in_cluster)
+        std_in_cluster = np.nanstd(arr_in_cluster)
+    else:
+        mean_in_cluster = 0
+        std_in_cluster = 0
 
     
     bundle = {
@@ -180,37 +204,89 @@ def get_feature_engineered_bundle(df):
     
     return bundle
 
+def get_filtered_fg_df(feature_engineered_df):
+    item_ids_static = feature_engineered_df.item_id[(feature_engineered_df.std_in_cluster == 0.0)].values
+    data_df_cleaned = feature_engineered_df[feature_engineered_df.mean_in_cluster.notnull()]
+    purified_df = data_df_cleaned[(data_df_cleaned.ratio_drop < 0.2)
+                          & (data_df_cleaned.ratio_same_value < 0.3)
+                          & (data_df_cleaned.n_jumps < 2)
+                          & (data_df_cleaned.n_days > 5)
+                          & (data_df_cleaned.std_in_cluster > 0.2)
+                          & (data_df_cleaned.std_in_cluster < 4)
+                          & (data_df_cleaned.ratio_of_na < 0.5)
+                          & (data_df_cleaned.n_unique_stock_id < 30)]
+    return purified_df
+
+
+def get_filtered_fg_df2(feature_engineered_df):
+    item_ids_static = feature_engineered_df.stock_id[(feature_engineered_df.std_in_cluster == 0.0)].values
+    data_df_cleaned = feature_engineered_df[feature_engineered_df.mean_in_cluster.notnull()]
+    purified_df = data_df_cleaned[(data_df_cleaned.ratio_drop < 0.2)
+                          & (data_df_cleaned.ratio_same_value < 0.3)
+                          & (data_df_cleaned.n_jumps < 2)
+                          & (data_df_cleaned.n_days > 20)
+                          & (data_df_cleaned.std_in_cluster > 0.2)
+                          & (data_df_cleaned.std_in_cluster < 4)
+                          & (data_df_cleaned.ratio_of_na < 0.5)
+                          & (data_df_cleaned.n_unique_stock_id < 10)]
+    return (item_ids_static, purified_df)
+
+
+
 def get_ivt_item(item_id):
     result = list(data_dict[item_id].groupby('STOCK_ID'))[0][1]
     return result
 
 
-def map_clean_up_target_df(series):
+def map_clean_up_target_df(stock_id, group_df):
 
-    tmp_df = pd.DataFrame(series)
-    tmp_df.columns = ['STOCK_AMOUNT']
-    tmp_df['REG_DT'] = tmp_df.index
-    return clean_up_target_df(tmp_df)['sell_impute']
+    tmp_df = clean_up_target_df(group_df)[['sell_impute', 'STOCK_AMOUNT', 'STOCK_AMOUNT_imputed']]
+    tmp_df['STOCK_ID'] = stock_id
+    tmp_df.columns = ['SELL_AMOUNT', 'STOCK_AMOUNT', 'STOCK_AMOUNT_imputed', 'STOCK_ID']
+
+    return tmp_df
 
 
-def get_sell_amount_by_item_id(df):
-#     tmp_df = df
-    df_pivot = df.pivot_table(index='REG_DT', columns='STOCK_ID', values='STOCK_AMOUNT')
-    sell_amount_by_stock = df_pivot.apply(map_clean_up_target_df)
-    sell_amount_total = sell_amount_by_stock.sum(axis=1)
-    
-    result = pd.DataFrame(sell_amount_total)
-    result.columns = ['SELL_AMOUNT']
+def save_img(cleaned_df):
+
+    for idx, group in cleaned_df.groupby('STOCK_ID'):
+        fig = plt.figure(figsize=(2, 1))
+        plt.axis('off')
+        plt.plot(group.index, group.STOCK_AMOUNT, '.')
+        plt.savefig('images/dataset/correct/%s' % idx)
+        plt.close(fig)
+
+
+def get_sell_amount_by_item_id(df, add_sell_amount=False):
+    #     print('hierer')
+    collect_day = df.COLLECT_DAY.values[0]
+    reg_id = df.REG_ID.values[0]
+
+    tmp_lst = []
+    for stock_id, group_df in list(df.groupby('STOCK_ID')):
+        tmp_lst.append(map_clean_up_target_df(stock_id, group_df))
+    result = pd.concat(tmp_lst)
+
+    #     df_pivot = df.pivot_table(index='REG_DT', columns='STOCK_ID', values='STOCK_AMOUNT')
+    #     sell_amount_by_stock = df_pivot.apply(map_clean_up_target_df)
+
+    #     if add_sell_amount:
+    #         sell_amount_total = sell_amount_by_stock.sum(axis=1)
+    #         result = pd.DataFrame(sell_amount_total)
+    #         result.columns = ['SELL_AMOUNT']
+    #         result['REG_ID'] = reg_id
+    #     else:
+    #         sell_amount_by_stock['REG_DT'] = sell_amount_by_stock.index
+    #         result = pd.melt(sell_amount_by_stock, id_vars=["REG_DT"], var_name="STOCK_ID", value_name="SELL_AMOUNT")
+
     item_id = df.ITEM_ID.values[0]
     result['ITEM_ID'] = item_id
-    result['REG_ID'] = 'SERVER'
+    result['REG_ID'] = reg_id
     result['UPT_DT'] = pd.to_datetime('now')
-    result['COLLECT_DAY'] = pd.to_datetime('now')
+    result['COLLECT_DAY'] = collect_day
     result['UPT_ID'] = 'FILTER ALGO'
-    
-    
-    return {'item_id': item_id, 'result': result}
 
+    return result
 
 
 def clean_up_target_df(target):
@@ -232,18 +308,17 @@ def clean_up_target_df(target):
             continue
         start_v = min(idx)
         end_v = max(idx)
-        target['STOCK_AMOUNT_imputed'][start_v:end_v+1] = target['STOCK_AMOUNT'][start_v:end_v+1].interpolate(method='from_derivatives')
+        target.loc[start_v:end_v+1, 'STOCK_AMOUNT_imputed'] = target['STOCK_AMOUNT'][start_v:end_v+1].interpolate(method='from_derivatives')
 
     target['STOCK_AMOUNT_imputed'] = target['STOCK_AMOUNT'].interpolate(method='from_derivatives')
 
     target['STOCK_AMOUNT_imputed'] = target.STOCK_AMOUNT_imputed.round()
     target['weekday_name'] = target.index.dayofweek
     target['sell'] = np.append([0], np.negative(np.diff(target.STOCK_AMOUNT_imputed)))
-    target['sell'][target['sell'].values < 0] = np.nan
+    target.loc[target['sell'].values < 0, 'sell'] = np.nan
     target.sell.astype(float)
     target['zscore'] = np.abs(target.sell - target.sell.mean() / max(0.0001, target.sell.std()))
-    target['sell'][target['zscore'] > 4] = np.nan
-
+    target.loc[target['zscore'] > 4, 'sell'] = np.nan
     X_incomplete = target[['sell', 'weekday_name']].values
 
     try:
@@ -253,15 +328,13 @@ def clean_up_target_df(target):
         target['sell_impute'] = target['sell']
         
     target['STOCK_AMOUNT_imputed_trimed'] = target['STOCK_AMOUNT_imputed']
-    target['STOCK_AMOUNT_imputed_trimed'][np.append([0], np.negative(np.diff(target.STOCK_AMOUNT_imputed))) < 0] = np.nan
+    
+    cond = np.append([0], np.negative(np.diff(target.STOCK_AMOUNT_imputed))) < 0
+    
+    target.loc[cond, 'STOCK_AMOUNT_imputed_trimed'] = np.nan
 
     return target
     
-
-
-    
-    
-
 
 
 # common functions
@@ -394,11 +467,44 @@ def plot_sample_from_item_ivts(df):
         plt.xticks(rotation="60")
     plt.show()
 
-def get_engine():
-    engine = create_engine("mysql://wspider:wspider00!q@133.186.143.65:3306/wspider",
+def get_engine(production=False):
+
+    if production:
+        engine = create_engine("mysql://wspider:wspider00!q@133.186.143.65:3306/wspider",
+                           connect_args={'connect_timeout': 10000})
+    else:
+        engine = create_engine("mysql://eums:eums00!q@192.168.0.50:3306/wspider_temp",
                            connect_args={'connect_timeout': 10000})
 
     return engine
+
+
+class Epopcon_db:
+    
+    def __init__(self, local_access=True):
+        
+        if local_access:
+        
+            self.wspider_temp = create_engine("mysql://eums:eums00!q@115.90.182.250:11000/wspider_temp",
+                           connect_args={'connect_timeout': 10000})
+            self.wspider = create_engine("mysql://wspider:wspider00!q@192.168.0.36:3306/wspider", pool_size=20,
+                       connect_args={'connect_timeout': 10000})
+        else:
+            
+            self.wspider_temp = create_engine("mysql://eums:eums00!q@192.168.0.50:3306/wspider_temp",
+                           connect_args={'connect_timeout': 10000})
+            
+            self.wspider = create_engine("mysql://wspider:wspider00!q@133.186.143.65:3306/wspider",
+                           connect_args={'connect_timeout': 10000})
+                
+        add_engine_pidguard(self.wspider_temp)
+        add_engine_pidguard(self.wspider)
+    def get_engine(self, production=False):
+        
+        if production:
+            return self.wspider
+        else:
+            return self.wspider_temp
 
 def get_image_from_item_id(item_id):
     engine = get_engine()
