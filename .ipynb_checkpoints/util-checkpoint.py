@@ -44,8 +44,8 @@ from fancyimpute import KNN
 
 import multiprocessing
 
-reload(sys)
-sys.setdefaultencoding('utf8')
+# reload(sys)
+# sys.setdefaultencoding('utf8')
 sns.set(style="whitegrid", color_codes=True)
 sns.set_style()
 pd.set_option('display.height', 10)
@@ -485,17 +485,17 @@ class Epopcon_db:
         
         if local_access:
         
-            self.wspider_temp = create_engine("mysql://eums:eums00!q@115.90.182.250:11000/wspider_temp",
-                           connect_args={'connect_timeout': 10000})
-            self.wspider = create_engine("mysql://wspider:wspider00!q@192.168.0.36:3306/wspider", pool_size=20,
-                       connect_args={'connect_timeout': 10000})
+            self.wspider_temp = create_engine("mysql://eums:eums00!q@115.90.182.250:11000/wspider_temp", pool_size=20, pool_recycle=3600,
+                           connect_args={'connect_timeout': 1000000})
+            self.wspider = create_engine("mysql://wspider:wspider00!q@192.168.0.36:3306/wspider", pool_size=20, pool_recycle=3600,
+                       connect_args={'connect_timeout': 1000000})
         else:
             
-            self.wspider_temp = create_engine("mysql://eums:eums00!q@192.168.0.50:3306/wspider_temp",
-                           connect_args={'connect_timeout': 10000})
+            self.wspider_temp = create_engine("mysql://eums:eums00!q@192.168.0.50:3306/wspider_temp", pool_size=20, pool_recycle=3600,
+                           connect_args={'connect_timeout': 1000000})
             
-            self.wspider = create_engine("mysql://wspider:wspider00!q@133.186.143.65:3306/wspider",
-                           connect_args={'connect_timeout': 10000})
+            self.wspider = create_engine("mysql://wspider:wspider00!q@133.186.143.65:3306/wspider", pool_size=20, pool_recycle=3600,
+                           connect_args={'connect_timeout': 1000000})
                 
         add_engine_pidguard(self.wspider_temp)
         add_engine_pidguard(self.wspider)
